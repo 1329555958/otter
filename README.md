@@ -3,6 +3,44 @@
 ## data_media 数据表配置
 ## data_media_pair 数据同步映射配置
 
+
+# 打印扩展日志
+## 修改node日志配置 node/conf/logback.xml
+```
+<appender name="EXTEND-ROOT" class="ch.qos.logback.classic.sift.SiftingAppender">
+    <discriminator>
+        <Key>otter</Key>
+        <DefaultValue>node</DefaultValue>
+    </discriminator>
+    <sift>
+        <appender name="FILE-${otter}"
+            class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <File>../logs/${otter}/extend.log</File>
+            <rollingPolicy
+                class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+                <!-- rollover daily -->
+                <fileNamePattern>../logs/${otter}/%d{yyyy-MM-dd}/extend-%d{yyyy-MM-dd}-%i.log.gz</fileNamePattern>
+                <timeBasedFileNamingAndTriggeringPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedFNATP">
+                        <!-- or whenever the file size reaches 100MB -->
+                        <maxFileSize>30MB</maxFileSize>
+                </timeBasedFileNamingAndTriggeringPolicy>
+                <maxHistory>60</maxHistory>
+            </rollingPolicy>
+            <encoder>
+                <pattern>
+                    %d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{56} - %msg%n
+                </pattern>
+            </encoder>
+        </appender>
+    </sift>
+</appender>
+
+<logger name="com.alibaba.otter.node.extend.processor" additivity="false">
+    <level value="INFO" />
+    <appender-ref ref="EXTEND-ROOT" />
+</logger>
+
+```
 <h1>环境搭建 & 打包</h1>
 <strong>环境搭建：</strong>
 <ol>

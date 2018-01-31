@@ -1,3 +1,8 @@
+# 配置表说明
+使用script.js生成批量配置脚本
+## data_media 数据表配置
+## data_media_pair 数据同步映射配置
+
 <h1>环境搭建 & 打包</h1>
 <strong>环境搭建：</strong>
 <ol>

@@ -12,6 +12,7 @@ SHOW MASTER STATUS;
 ```
 
 # 注意
+- lib/install.sh可以解决包依赖问题
 - 源数据必须开启binlog，并且ROW模式
 - 主库server_id必须配置
 - 必须使用.*能包含所有的创建表操作ddl才会被同步

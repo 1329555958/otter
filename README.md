@@ -4,6 +4,21 @@
 ## data_media_pair 数据同步映射配置
 
 
+# 常用命令
+```
+SHOW VARIABLES LIKE '%server%';
+SHOW VARIABLES LIKE '%binlog%';
+SHOW MASTER STATUS;
+```
+
+# 注意
+- 源数据必须开启binlog，并且ROW模式
+- 主库server_id必须配置
+- 必须使用.*能包含所有的创建表操作ddl才会被同步
+- 出错3次会挂起，查看日志记录，可以修改自动恢复次数
+- 添加源码时把所有代码全部添加，包含包名和导入
+- 扩展打印日志 ，修改`node/conf/logback.xml`
+
 # 打印扩展日志
 ## 修改node日志配置 node/conf/logback.xml
 ```

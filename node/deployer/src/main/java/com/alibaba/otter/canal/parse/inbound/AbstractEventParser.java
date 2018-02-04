@@ -371,6 +371,7 @@ public abstract class AbstractEventParser<EVENT> extends AbstractCanalLifeCycle 
 
     protected List<CanalEntry.Entry> parseEvent(List<EVENT> events, int batchCount) throws Exception {
         List<Future<List<CanalEntry.Entry>>> futures = new ArrayList<Future<List<Entry>>>();
+        batchCount = Math.max(batchCount,1);
         int batchSize = Math.floorDiv(events.size(), batchCount);
         int i = 1;
         for (; i < batchCount; i++) {

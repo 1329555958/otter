@@ -33,11 +33,10 @@ import com.taobao.tddl.dbsync.binlog.LogEvent;
 
 public class MysqlConnection implements ErosaConnection {
 
-    private static final Logger logger = LoggerFactory.getLogger("com.wch.test");
+    private final Logger logger = LoggerFactory.getLogger("com.wch.test");
     static DateFormat TIME_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss");
     private long EVENT_COUNT = 0, LOG_TIME = 0, TOTAL = 0;
-    //默认10000
-    private int batchSize = 10000;
+
     private MysqlConnector connector;
     private long slaveId;
     private Charset charset = Charset.forName("UTF-8");
@@ -146,6 +145,19 @@ public class MysqlConnection implements ErosaConnection {
 
         List<LogEvent> eventBuffer = new ArrayList<LogEvent>();
         long parseTime = 0;
+        //bufferSize / batchSize 不要超过50
+        //bufferSize 事件缓存数量，达到一定量才进行解析
+        //batchSize 多线程解析时，多少划分为一个批次，每个解析大概1ms，所以10000比较合适
+        int batchSize = 10000,bufferSize = 100000;
+        String batchSizeConf = System.getProperty("parse.batchSize","10000");
+        String bufferSizeConf = System.getProperty("parse.bufferSize","100000");
+        try {
+            batchSize = Integer.valueOf(batchSizeConf);
+            bufferSize = Integer.valueOf(bufferSizeConf);
+            batchSize = Math.max(batchSize,1);
+            bufferSize = Math.max(bufferSize,1);
+        }catch (Exception e){}
+        logger.info("parse params:batchSize = {},bufferSize = {}",batchSize,bufferSize);
         while (fetcher.fetch()) {
             long start = System.currentTimeMillis();
             LogEvent event = null;
@@ -169,7 +181,7 @@ public class MysqlConnection implements ErosaConnection {
             }
             eventBuffer.add(event);
             //超过10w条或者1分钟就进行一次解析
-            if (eventBuffer.size() > 100000 || System.currentTimeMillis() - parseTime > 60000) {
+            if (eventBuffer.size() > bufferSize || System.currentTimeMillis() - parseTime > 60000) {
                 long parseStart = System.currentTimeMillis();
                 List<CanalEntry.Entry> entries = func.parse(eventBuffer, Math.floorDiv(eventBuffer.size(), batchSize));
                 logger.info("2222222222 parse {} events take {} ms, last is[pos={},time={}]", eventBuffer.size(), System.currentTimeMillis() - parseStart, event.getLogPos(), TIME_FORMAT.format(new Date(event.getHeader().getWhen() * 1000)));

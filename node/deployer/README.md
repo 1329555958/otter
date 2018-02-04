@@ -1,0 +1,10 @@
+CanalInstanceWithManager.CanalInstanceWithManager
+
+AbstractEventParser.AbstractEventParser()
+consumeTheEventAndProfilingIfNecessary
+
+# 读取binlog速度比较慢
+MysqlConnection.dump -> AbstractEventParser.SinkFunction 解析binlog比较慢
+bufferSize / batchSize 不要超过50
+bufferSize 事件缓存数量，达到一定量才进行解析
+batchSize 多线程解析时，多少划分为一个批次，每个解析大概1ms，所以10000比较合适

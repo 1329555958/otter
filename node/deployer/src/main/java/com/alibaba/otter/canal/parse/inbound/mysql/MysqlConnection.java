@@ -5,9 +5,12 @@ import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import com.alibaba.otter.canal.parse.inbound.AbstractEventParser;
+import com.alibaba.otter.canal.protocol.CanalEntry;
 import org.apache.commons.lang.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,24 +33,26 @@ import com.taobao.tddl.dbsync.binlog.LogEvent;
 
 public class MysqlConnection implements ErosaConnection {
 
-    private static final Logger logger      = LoggerFactory.getLogger("com.wch.test");
+    private static final Logger logger = LoggerFactory.getLogger("com.wch.test");
     static DateFormat TIME_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss");
-    static long EVENT_COUNT = 0,LOG_TIME = 0,TOTAL = 0;
-    private MysqlConnector      connector;
-    private long                slaveId;
-    private Charset             charset     = Charset.forName("UTF-8");
-    private BinlogFormat        binlogFormat;
-    private BinlogImage         binlogImage;
+    private long EVENT_COUNT = 0, LOG_TIME = 0, TOTAL = 0;
+    //默认10000
+    private int batchSize = 10000;
+    private MysqlConnector connector;
+    private long slaveId;
+    private Charset charset = Charset.forName("UTF-8");
+    private BinlogFormat binlogFormat;
+    private BinlogImage binlogImage;
 
     // tsdb releated
-    private AuthenticationInfo  authInfo;
-    protected int               connTimeout = 5 * 1000;                                      // 5秒
-    protected int               soTimeout   = 60 * 60 * 1000;                                // 1小时
+    private AuthenticationInfo authInfo;
+    protected int connTimeout = 5 * 1000;                                      // 5秒
+    protected int soTimeout = 60 * 60 * 1000;                                // 1小时
 
-    public MysqlConnection(){
+    public MysqlConnection() {
     }
 
-    public MysqlConnection(InetSocketAddress address, String username, String password){
+    public MysqlConnection(InetSocketAddress address, String username, String password) {
         authInfo = new AuthenticationInfo();
         authInfo.setAddress(address);
         authInfo.setUsername(username);
@@ -59,7 +64,7 @@ public class MysqlConnection implements ErosaConnection {
     }
 
     public MysqlConnection(InetSocketAddress address, String username, String password, byte charsetNumber,
-                           String defaultSchema){
+                           String defaultSchema) {
         authInfo = new AuthenticationInfo();
         authInfo.setAddress(address);
         authInfo.setUsername(username);
@@ -138,6 +143,9 @@ public class MysqlConnection implements ErosaConnection {
         fetcher.start(connector.getChannel());
         LogDecoder decoder = new LogDecoder(LogEvent.UNKNOWN_EVENT, LogEvent.ENUM_END_EVENT);
         LogContext context = new LogContext();
+
+        List<LogEvent> eventBuffer = new ArrayList<LogEvent>();
+        long parseTime = 0;
         while (fetcher.fetch()) {
             long start = System.currentTimeMillis();
             LogEvent event = null;
@@ -147,20 +155,43 @@ public class MysqlConnection implements ErosaConnection {
                 throw new CanalParseException("parse failed");
             }
             EVENT_COUNT++;
-            if(LOG_TIME == 0){
+            if (LOG_TIME == 0) {
                 LOG_TIME = System.currentTimeMillis();
             }
-            if(System.currentTimeMillis() - LOG_TIME > 3000 || EVENT_COUNT%10000 == 0){
+            if (System.currentTimeMillis() - LOG_TIME > 3000 || EVENT_COUNT % 10000 == 0) {
                 LOG_TIME = System.currentTimeMillis();
                 TOTAL += EVENT_COUNT;
-                logger.info("--- fetcher {},new {}, now is[pos={},time={}]",TOTAL,EVENT_COUNT,event.getLogPos(),TIME_FORMAT.format(new Date(event.getHeader().getWhen()* 1000)));
+                logger.info("111111111 fetcher {},new {}, now is[pos={},time={}]", TOTAL, EVENT_COUNT, event.getLogPos(), TIME_FORMAT.format(new Date(event.getHeader().getWhen() * 1000)));
                 EVENT_COUNT = 0;
             }
-            if (!func.sink(event)) {
-                break;
+            if (parseTime == 0) {
+                parseTime = System.currentTimeMillis();
             }
+            eventBuffer.add(event);
+            //超过10w条或者1分钟就进行一次解析
+            if (eventBuffer.size() > 100000 || System.currentTimeMillis() - parseTime > 60000) {
+                long parseStart = System.currentTimeMillis();
+                List<CanalEntry.Entry> entries = func.parse(eventBuffer, Math.floorDiv(eventBuffer.size(), batchSize));
+                logger.info("2222222222 parse {} events take {} ms, last is[pos={},time={}]", eventBuffer.size(), System.currentTimeMillis() - parseStart, event.getLogPos(), TIME_FORMAT.format(new Date(event.getHeader().getWhen() * 1000)));
+                //清空
+                eventBuffer = new ArrayList<LogEvent>();
+                parseTime = 0;
+                boolean isBreak = false;
+                for (CanalEntry.Entry entry : entries) {
+                    if (!func.sinkEntry(entry)) {
+                        isBreak = true;
+                        break;
+                    }
+                }
+                if (isBreak) {
+                    break;
+                }
+            }
+
         }
+
     }
+
 
     public void dump(long timestamp, SinkFunction func) throws IOException {
         throw new NullPointerException("Not implement yet");
@@ -323,7 +354,7 @@ public class MysqlConnection implements ErosaConnection {
 
         private String value;
 
-        private BinlogFormat(String value){
+        private BinlogFormat(String value) {
             this.value = value;
         }
 
@@ -363,7 +394,7 @@ public class MysqlConnection implements ErosaConnection {
 
         private String value;
 
-        private BinlogImage(String value){
+        private BinlogImage(String value) {
             this.value = value;
         }
 
@@ -376,6 +407,7 @@ public class MysqlConnection implements ErosaConnection {
             }
             return null;
         }
+
     }
 
     // ================== setter / getter ===================

@@ -65,9 +65,8 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
     private BatchMode batchMode = BatchMode.ITEMSIZE;           // 默认为内存大小模式
     private boolean ddlIsolation = false;
     static final Logger LOG = LoggerFactory.getLogger("com.wch.test");
-    private long EVENT_COUNT = 0, LOG_TIME = 0, TOTAL = 0, PUT_TIME = 0;
+    private long EVENT_COUNT = 0, LOG_TIME = 0, TOTAL = 0;
     static DateFormat TIME_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss");
-    private List<Event> EVENT_BUFFER = new ArrayList<Event>();
 
     public MemoryEventStoreWithBuffer() {
 
@@ -159,26 +158,10 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
             CanalEntry.Header header = data.get(data.size() - 1).getEntry().getHeader();
             LOG_TIME = System.currentTimeMillis();
             TOTAL += EVENT_COUNT;
-            LOG.info("events now is {}, new {} now is [file={},pos={},time={}]", TOTAL, EVENT_COUNT, header.getLogfileName(), header.getLogfileOffset(), TIME_FORMAT.format(new Date(header.getExecuteTime())));
+            LOG.info("333333333 events now is {}, new {} now is [file={},pos={},time={}]", TOTAL, EVENT_COUNT, header.getLogfileName(), header.getLogfileOffset(), TIME_FORMAT.format(new Date(header.getExecuteTime())));
             EVENT_COUNT = 0;
         }
-        if (PUT_TIME == 0) {
-            PUT_TIME = System.currentTimeMillis();
-        }
-        //这里的事件缓存是避免多次放入缓冲区引起加锁并发的性能消耗进行一下缓冲
-        //缓存不到1/4且未超过60s时先缓存
-        EVENT_BUFFER.addAll(data);
-        if (EVENT_BUFFER.size() < bufferSize / 4 && System.currentTimeMillis() - PUT_TIME < 60000) {
-            return true;
-        }
-        data = EVENT_BUFFER;
-        //重置缓冲区
-        EVENT_BUFFER = new ArrayList<Event>();
-        PUT_TIME = 0;
-        CanalEntry.Header header = data.get(data.size() - 1).getEntry().getHeader();
-        LOG.info("now put {} events,last is [file={},pos={},time={}]", data.size(), header.getLogfileName(), header.getLogfileOffset(), TIME_FORMAT.format(new Date(header.getExecuteTime())));
         final ReentrantLock lock = this.lock;
-        long start = System.currentTimeMillis();
         lock.lock();
         try {
             if (!checkFreeSlotAt(putSequence.get() + data.size())) {
@@ -190,8 +173,6 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
             }
         } finally {
             lock.unlock();
-            long take = System.currentTimeMillis() - start;
-            LOG.info("put {} events take {} ms", data.size(), take);
         }
     }
 

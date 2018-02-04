@@ -1,15 +1,5 @@
 package com.alibaba.otter.canal.store.memory;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
-
 import com.alibaba.otter.canal.protocol.CanalEntry;
 import com.alibaba.otter.canal.protocol.CanalEntry.EventType;
 import com.alibaba.otter.canal.protocol.position.LogPosition;
@@ -26,9 +16,20 @@ import com.alibaba.otter.canal.store.model.Events;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+
 /**
  * 基于内存buffer构建内存memory store
- *
+ * <p>
  * <pre>
  * 变更记录：
  * 1. 新增BatchMode类型，支持按内存大小获取批次数据，内存大小更加可控.
@@ -41,36 +42,38 @@ import org.slf4j.LoggerFactory;
 public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge implements CanalEventStore<Event>, CanalStoreScavenge {
 
     private static final long INIT_SQEUENCE = -1;
-    private int               bufferSize    = 16 * 1024;
-    private int               bufferMemUnit = 1024;                         // memsize的单位，默认为1kb大小
-    private int               indexMask;
-    private Event[]           entries;
+    private int bufferSize = 16 * 1024;
+    private int bufferMemUnit = 1024;                         // memsize的单位，默认为1kb大小
+    private int indexMask;
+    private Event[] entries;
 
     // 记录下put/get/ack操作的三个下标
-    private AtomicLong        putSequence   = new AtomicLong(INIT_SQEUENCE); // 代表当前put操作最后一次写操作发生的位置
-    private AtomicLong        getSequence   = new AtomicLong(INIT_SQEUENCE); // 代表当前get操作读取的最后一条的位置
-    private AtomicLong        ackSequence   = new AtomicLong(INIT_SQEUENCE); // 代表当前ack操作的最后一条的位置
+    private AtomicLong putSequence = new AtomicLong(INIT_SQEUENCE); // 代表当前put操作最后一次写操作发生的位置
+    private AtomicLong getSequence = new AtomicLong(INIT_SQEUENCE); // 代表当前get操作读取的最后一条的位置
+    private AtomicLong ackSequence = new AtomicLong(INIT_SQEUENCE); // 代表当前ack操作的最后一条的位置
 
     // 记录下put/get/ack操作的三个memsize大小
-    private AtomicLong        putMemSize    = new AtomicLong(0);
-    private AtomicLong        getMemSize    = new AtomicLong(0);
-    private AtomicLong        ackMemSize    = new AtomicLong(0);
+    private AtomicLong putMemSize = new AtomicLong(0);
+    private AtomicLong getMemSize = new AtomicLong(0);
+    private AtomicLong ackMemSize = new AtomicLong(0);
 
     // 阻塞put/get操作控制信号
-    private ReentrantLock     lock          = new ReentrantLock();
-    private Condition         notFull       = lock.newCondition();
-    private Condition         notEmpty      = lock.newCondition();
+    private ReentrantLock lock = new ReentrantLock();
+    private Condition notFull = lock.newCondition();
+    private Condition notEmpty = lock.newCondition();
 
-    private BatchMode         batchMode     = BatchMode.ITEMSIZE;           // 默认为内存大小模式
-    private boolean           ddlIsolation  = false;
+    private BatchMode batchMode = BatchMode.ITEMSIZE;           // 默认为内存大小模式
+    private boolean ddlIsolation = false;
     static final Logger LOG = LoggerFactory.getLogger("com.wch.test");
-    static long EVENT_COUNT = 0,LOG_TIME = 0,TOTAL = 0;
+    private long EVENT_COUNT = 0, LOG_TIME = 0, TOTAL = 0, PUT_TIME = 0;
     static DateFormat TIME_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.sss");
-    public MemoryEventStoreWithBuffer(){
+    private List<Event> EVENT_BUFFER = new ArrayList<Event>();
+
+    public MemoryEventStoreWithBuffer() {
 
     }
 
-    public MemoryEventStoreWithBuffer(BatchMode batchMode){
+    public MemoryEventStoreWithBuffer(BatchMode batchMode) {
         this.batchMode = batchMode;
     }
 
@@ -123,7 +126,7 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
         final ReentrantLock lock = this.lock;
         lock.lockInterruptibly();
         try {
-            for (;;) {
+            for (; ; ) {
                 if (checkFreeSlotAt(putSequence.get() + data.size())) {
                     doPut(data);
                     return true;
@@ -149,22 +152,37 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
             return true;
         }
         EVENT_COUNT += data.size();
-        if(LOG_TIME == 0){
+        if (LOG_TIME == 0) {
             LOG_TIME = System.currentTimeMillis();
         }
-        if(System.currentTimeMillis() - LOG_TIME > 3000 || EVENT_COUNT%10000 == 0){
-            CanalEntry.Header header  = data.get(data.size() -1).getEntry().getHeader();
+        if (System.currentTimeMillis() - LOG_TIME > 3000 || EVENT_COUNT % 10000 == 0) {
+            CanalEntry.Header header = data.get(data.size() - 1).getEntry().getHeader();
             LOG_TIME = System.currentTimeMillis();
             TOTAL += EVENT_COUNT;
-            LOG.info("events now is {}, new {} now is [file={},pos={},time={}]",TOTAL, EVENT_COUNT,header.getLogfileName(),header.getLogfileOffset(),TIME_FORMAT.format(new Date(header.getExecuteTime())));
+            LOG.info("events now is {}, new {} now is [file={},pos={},time={}]", TOTAL, EVENT_COUNT, header.getLogfileName(), header.getLogfileOffset(), TIME_FORMAT.format(new Date(header.getExecuteTime())));
             EVENT_COUNT = 0;
         }
-
-
+        if (PUT_TIME == 0) {
+            PUT_TIME = System.currentTimeMillis();
+        }
+        //这里的事件缓存是避免多次放入缓冲区引起加锁并发的性能消耗进行一下缓冲
+        //缓存不到1/4且未超过60s时先缓存
+        EVENT_BUFFER.addAll(data);
+        if (EVENT_BUFFER.size() < bufferSize / 4 && System.currentTimeMillis() - PUT_TIME < 60000) {
+            return true;
+        }
+        data = EVENT_BUFFER;
+        //重置缓冲区
+        EVENT_BUFFER = new ArrayList<Event>();
+        PUT_TIME = 0;
+        CanalEntry.Header header = data.get(data.size() - 1).getEntry().getHeader();
+        LOG.info("now put {} events,last is [file={},pos={},time={}]", data.size(), header.getLogfileName(), header.getLogfileOffset(), TIME_FORMAT.format(new Date(header.getExecuteTime())));
         final ReentrantLock lock = this.lock;
+        long start = System.currentTimeMillis();
         lock.lock();
         try {
             if (!checkFreeSlotAt(putSequence.get() + data.size())) {
+                LOG.info("缓冲区空间已满!");
                 return false;
             } else {
                 doPut(data);
@@ -172,6 +190,8 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
             }
         } finally {
             lock.unlock();
+            long take = System.currentTimeMillis() - start;
+            LOG.info("put {} events take {} ms", data.size(), take);
         }
     }
 
@@ -239,7 +259,7 @@ public class MemoryEventStoreWithBuffer extends AbstractCanalStoreScavenge imple
         final ReentrantLock lock = this.lock;
         lock.lockInterruptibly();
         try {
-            for (;;) {
+            for (; ; ) {
                 if (checkUnGetSlotAt((LogPosition) start, batchSize)) {
                     return doGet(start, batchSize);
                 }

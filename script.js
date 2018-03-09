@@ -6,26 +6,26 @@ var fs = require("fs");
 var DATA = fs.readFileSync('tables') + '';
 var LINES = DATA.split('\r\n');
 var SQL = [];
-
+//从数据库读取到的数据源配置文件
 var SOURCE = {
     "mode": "SINGLE",
-    "name": "(tt_inst_notify_log|tt_order_submit_history|tt_inst_order_result|tt_fundin_order|tt_inst_order|tt_cmf_order|tt_cmf_request)",
+    "name": "",
     "namespace": "cmf2",
     "source": {
         "driver": "com.mysql.jdbc.Driver",
         "encode": "UTF8",
         "gmtCreate": new Date().getTime(),
         "gmtModified": new Date().getTime(),
-        "id": 1,
-        "name": "Source",
+        "id": 3,
+        "name": "aliyu",
         "password": "!QAZ2wsx",
         "type": "MYSQL",
-        "url": "jdbc:mysql://rm-uf6431hzfw3r8ryb6.mysql.rds.aliyuncs.com:3306",
+        "url": "jdbc:mysql://rm-uf6431hzfw3r8ryb6go.mysql.rds.aliyuncs.com:3306",
         "username": "vfinance_yace"
     }
 }, TARGET = {
     "mode": "SINGLE",
-    "name": "(tt_inst_notify_log|tt_order_submit_history|tt_inst_order_result|tt_fundin_order|tt_inst_order|tt_cmf_order|tt_cmf_request)",
+    "name": "tt_inst_notify_log",
     "namespace": "cmf2",
     "source": {
         "driver": "com.mysql.jdbc.Driver",
@@ -34,9 +34,9 @@ var SOURCE = {
         "gmtModified": new Date().getTime(),
         "id": 2,
         "name": "Target",
-        "password": "mysql",
+        "password": "wch123",
         "type": "MYSQL",
-        "url": "jdbc:mysql://172.19.203.160:3306",
+        "url": "jdbc:mysql://10.65.215.37:3306",
         "username": "root"
     }
 };
@@ -63,25 +63,26 @@ function genDataMediaSql() {
 }
 
 function genTableSqlWithSource(source) {
-    var sql = ["INSERT INTO data_media(name,namespace,properties,data_media_source_id,gmt_create) VALUES ("
+    var sql = ["INSERT INTO DATA_MEDIA(name,namespace,properties,data_media_source_id,gmt_create) VALUES ("
         , '\'', source.name, '\',\'', source.namespace, '\',\'', JSON.stringify(source), '\',', source.source.id, ',', "NOW());"];
     SQL.push(sql.join(''));
 }
 //生成配对配置，与生成配置表的配置配合使用，记得修改start及count值
 function genPairSql() {
+    var pipeline = 4;
     SQL = [];
     //SELECT AUTO_INCREMENT FROM information_schema.`TABLES` WHERE TABLE_SCHEMA='otter' AND TABLE_NAME='data_media';
-    var start = 126, count = 46; //配置表的源id
+    var start = 5, count = LINES.length; //配置表的源id
     for (var i = 0; i < count; i++) {
         var sql = [
-            'insert into `data_media_pair` (`PULLWEIGHT`, `PUSHWEIGHT`, `SOURCE_DATA_MEDIA_ID`, `TARGET_DATA_MEDIA_ID`, `PIPELINE_ID`, `COLUMN_PAIR_MODE`, `GMT_CREATE`, `GMT_MODIFIED`) values(NULL',
+            'INSERT INTO `DATA_MEDIA_PAIR` (`PULLWEIGHT`, `PUSHWEIGHT`, `SOURCE_DATA_MEDIA_ID`, `TARGET_DATA_MEDIA_ID`, `PIPELINE_ID`, `COLUMN_PAIR_MODE`, `GMT_CREATE`, `GMT_MODIFIED`) values(NULL',
             "'5'",
             start++, start++
-            , "'1','INCLUDE','2018-01-30 18:23:54','2018-01-30 18:23:54');"
+            , pipeline,"'INCLUDE','2018-01-30 18:23:54','2018-01-30 18:23:54');"
         ];
         SQL.push(sql.join(','))
     }
-    SQL.push("UPDATE data_media_pair SET resolver = (SELECT t.data FROM data_bak t WHERE t.name = 'resolver-null'),FILTER = (SELECT t.data FROM data_bak t WHERE t.name = 'filter-del');");
+    SQL.push("UPDATE DATA_MEDIA_PAIR SET resolver = (SELECT t.data FROM data_bak t WHERE t.name = 'resolver-null'),FILTER = (SELECT t.data FROM data_bak t WHERE t.name = 'filter-del');");
     saveSql('pair.sql');
 }
 /**
@@ -110,9 +111,12 @@ function saveSql(filename = 'sql.sql') {
         }
     });
 }
-genDataMediaSql();
+
+
+
+//genDataMediaSql();
 genPairSql();
-truncateTable();
+//truncateTable();
 
 
 //target

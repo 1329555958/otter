@@ -9,7 +9,24 @@
 SHOW VARIABLES LIKE '%server%';
 SHOW VARIABLES LIKE '%binlog%';
 SHOW MASTER STATUS;
+SELECT * FROM information_schema.PROCESSLIST p WHERE p.COMMAND = 'Binlog Dump';
 ```
+
+# 流程
+- MysqlConnection.dump 
+receiveBuffer
+连接到主库，主库发送数据，canal属于被动接收
+
+
+- MemoryEventStoreWithBuffer.tryPut(List<Event> data)
+存入缓冲区
+
+- MemoryEventStoreWithBuffer.get
+
+# 参数说明
+- 获取批次数据超时时间(毫秒)
+不设置超时时间,如果想按照消费批次大小来进行消费,需要设置canal的ITEMSIZE模式且超时时间设置为0
+
 
 # 注意
 - lib/install.sh可以解决包依赖问题
@@ -19,7 +36,7 @@ SHOW MASTER STATUS;
 - 出错3次会挂起，查看日志记录，可以修改自动恢复次数
 - 添加源码时把所有代码全部添加，包含包名和导入
 - 扩展打印日志 ，修改`node/conf/logback.xml`
-
+- 获取批次数据超时时间(毫秒)
 # 打印扩展日志
 ## 修改node日志配置 node/conf/logback.xml
 ```

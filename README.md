@@ -89,6 +89,12 @@ receiveBuffer
      可以适当调大，当缓冲区满了之后就会一下获取到最大数据了，再使用数据载入线程进行写入数据库
    - 映射关系表
      表的个数不要太多，太多可以把数据均分一下配置不同的pipeline
+     
+# 修改说明
+- com.alibaba.otter.canal.parse.driver.mysql.socket.SocketChannel
+  添加netty 缓冲区最大内存限制，直接内存过大并不会提升性能而且会增加回收内存的性能消耗
+- com.alibaba.otter.node.etl.load.loader.db.DbLoadAction
+  表太多并且每张表的记录比较少的时候按照表来划分线程批次就会有问题，现在改为直接执行sql语句的形式来来批量提交多张表
    
 
 

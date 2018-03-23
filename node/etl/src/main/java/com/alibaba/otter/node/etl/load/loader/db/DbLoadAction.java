@@ -20,18 +20,16 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
+import com.alibaba.otter.shared.communication.core.model.Event;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.exception.ExceptionUtils;
 import org.apache.ddlutils.model.Column;
@@ -83,7 +81,7 @@ import com.alibaba.otter.shared.etl.model.RowBatch;
 
 /**
  * 数据库load的执行入口
- * 
+ *
  * @author jianghang 2011-10-31 下午03:17:43
  * @version 4.0.0
  */
@@ -187,7 +185,7 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
 
     /**
      * 分析整个数据，将datas划分为多个批次. ddl sql前的DML并发执行，然后串行执行ddl后，再并发执行DML
-     * 
+     *
      * @return
      */
     private boolean isDdlDatas(List<EventData> eventDatas) {
@@ -232,19 +230,26 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
     private void doLoad(final DbLoadContext context, DbLoadData loadData) {
         // 优先处理delete,可以利用batch优化
         List<List<EventData>> batchDatas = new ArrayList<List<EventData>>();
-        for (TableLoadData tableData : loadData.getTables()) {
-            if (useBatch) {
-                // 优先执行delete语句，针对uniqe更新，一般会进行delete + insert的处理模式，避免并发更新
-                batchDatas.addAll(split(tableData.getDeleteDatas()));
-            } else {
-                // 如果不可以执行batch，则按照单条数据进行并行提交
-                // 优先执行delete语句，针对uniqe更新，一般会进行delete + insert的处理模式，避免并发更新
+        List<EventData> deleteBatchDatas = new ArrayList<EventData>();
+        List<EventData> insertBatchDatas = new ArrayList<EventData>();
+        List<EventData> updateBatchDatas = new ArrayList<EventData>();
+        if (useBatch) {
+            for (TableLoadData tableData : loadData.getTables()) {
+                deleteBatchDatas.addAll(tableData.getDeleteDatas());
+                insertBatchDatas.addAll(tableData.getInsertDatas());
+                updateBatchDatas.addAll(tableData.getUpadateDatas());
+            }
+            // 优先执行delete语句，针对uniqe更新，一般会进行delete + insert的处理模式，避免并发更新
+            batchDatas.addAll(group(deleteBatchDatas));
+        } else {
+            // 如果不可以执行batch，则按照单条数据进行并行提交
+            // 优先执行delete语句，针对uniqe更新，一般会进行delete + insert的处理模式，避免并发更新
+            for (TableLoadData tableData : loadData.getTables()) {
                 for (EventData data : tableData.getDeleteDatas()) {
                     batchDatas.add(Arrays.asList(data));
                 }
             }
         }
-
         if (context.getPipeline().getParameters().isDryRun()) {
             doDryRun(context, batchDatas, true);
         } else {
@@ -253,12 +258,13 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
         batchDatas.clear();
 
         // 处理下insert/update
-        for (TableLoadData tableData : loadData.getTables()) {
-            if (useBatch) {
-                // 执行insert + update语句
-                batchDatas.addAll(split(tableData.getInsertDatas()));
-                batchDatas.addAll(split(tableData.getUpadateDatas()));// 每条记录分为一组，并行加载
-            } else {
+
+        if (useBatch) {
+            // 执行insert + update语句
+            batchDatas.addAll(group(insertBatchDatas));
+            batchDatas.addAll(group(updateBatchDatas));// 每条记录分为一组，并行加载
+        } else {
+            for (TableLoadData tableData : loadData.getTables()) {
                 // 执行insert + update语句
                 for (EventData data : tableData.getInsertDatas()) {
                     batchDatas.add(Arrays.asList(data));
@@ -278,6 +284,37 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
     }
 
     /**
+     * 把数据分成batchsize大小的分组，如果数量大于线程池线程数量就扩大分组容量batchsize
+     * @param datas
+     * @return
+     */
+    private List<List<EventData>> group(List<EventData> datas){
+        List<List<EventData>> result = new ArrayList<List<EventData>>();
+        if (datas == null || datas.size() == 0) {
+            return result;
+        }
+        //datas is too few ,so use one group to execute in one thread
+        if (datas.size() < batchSize) {
+            result.add(datas);
+            return result;
+        }
+        int batchSize = this.batchSize;
+        // calculate the batchSize,because pool size is the max groups that all data can be divided to
+        batchSize = Math.max(datas.size()/poolSize + 1,batchSize);
+        int i = 0;
+        while (true){
+            int from = i * batchSize,to = Math.min((i+1) * batchSize,datas.size());
+            i ++;
+            List<EventData> batch = datas.subList(from,to);
+            result.add(batch);
+            if(to >= datas.size()){
+                break;
+            }
+        }
+        return result;
+    }
+
+    /**
      * 将对应的数据按照sql相同进行batch组合
      */
     private List<List<EventData>> split(List<EventData> datas) {
@@ -285,25 +322,17 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
         if (datas == null || datas.size() == 0) {
             return result;
         } else {
-            int[] bits = new int[datas.size()];// 初始化一个标记，用于标明对应的记录是否已分入某个batch
-            for (int i = 0; i < bits.length; i++) {
-                // 跳过已经被分入batch的
-                while (i < bits.length && bits[i] == 1) {
-                    i++;
-                }
-
-                if (i >= bits.length) { // 已处理完成，退出
-                    break;
-                }
-
+            int length = datas.size();
+            for (int i = 0; i < length; i++) {
                 // 开始添加batch，最大只加入batchSize个数的对象
                 List<EventData> batch = new ArrayList<EventData>();
-                bits[i] = 1;
-                batch.add(datas.get(i));
-                for (int j = i + 1; j < bits.length && batch.size() < batchSize; j++) {
-                    if (bits[j] == 0 && canBatch(datas.get(i), datas.get(j))) {
-                        batch.add(datas.get(j));
-                        bits[j] = 1;// 修改为已加入
+                EventData first = datas.get(i);
+                batch.add(first);
+                for (i++ ; i < length ; i++) {
+                    if (canBatch(datas.get(i),first)) {
+                        batch.add(datas.get(i));
+                    }else {
+                        break;
                     }
                 }
                 result.add(batch);
@@ -343,7 +372,7 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
 
     /**
      * 执行ddl的调用，处理逻辑比较简单: 串行调用
-     * 
+     *
      * @param context
      * @param eventDatas
      */
@@ -588,16 +617,24 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
                                         processedDatas.clear();
                                         interceptor.transactionBegin(context, splitDatas, dbDialect);
                                         JdbcTemplate template = dbDialect.getJdbcTemplate();
-                                        int[] affects = template.batchUpdate(sql, new BatchPreparedStatementSetter() {
+                                        int[] affects = null;
+                                        //if the first is same to the last one,use BatchPreparedStatementSetter
+                                        //else use sqls
+                                        if(canBatch(splitDatas.get(0),splitDatas.get(splitDatas.size() -1))){
+                                            affects   = template.batchUpdate(sql, new BatchPreparedStatementSetter() {
 
-                                            public void setValues(PreparedStatement ps, int idx) throws SQLException {
-                                                doPreparedStatement(ps, dbDialect, lobCreator, splitDatas.get(idx));
-                                            }
+                                                public void setValues(PreparedStatement ps, int idx) throws SQLException {
+                                                    doPreparedStatement(ps, dbDialect, lobCreator, splitDatas.get(idx));
+                                                }
 
-                                            public int getBatchSize() {
-                                                return splitDatas.size();
-                                            }
-                                        });
+                                                public int getBatchSize() {
+                                                    return splitDatas.size();
+                                                }
+                                            });
+                                        }else {
+                                            String[] sqls = genSqls(dbDialect,splitDatas);
+                                            affects = template.batchUpdate(sqls);
+                                        }
                                         interceptor.transactionEnd(context, splitDatas, dbDialect);
                                         return affects;
                                     } finally {
@@ -643,11 +680,11 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
                         exeResult = ExecuteResult.SUCCESS;
                     } catch (DeadlockLoserDataAccessException ex) {
                         error = new LoadException(ExceptionUtils.getFullStackTrace(ex),
-                            DbLoadDumper.dumpEventDatas(splitDatas));
+                                DbLoadDumper.dumpEventDatas(splitDatas));
                         exeResult = ExecuteResult.RETRY;
                     } catch (DataIntegrityViolationException ex) {
                         error = new LoadException(ExceptionUtils.getFullStackTrace(ex),
-                            DbLoadDumper.dumpEventDatas(splitDatas));
+                                DbLoadDumper.dumpEventDatas(splitDatas));
                         // if (StringUtils.contains(ex.getMessage(),
                         // "ORA-00001")) {
                         // exeResult = ExecuteResult.RETRY;
@@ -657,11 +694,11 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
                         exeResult = ExecuteResult.ERROR;
                     } catch (RuntimeException ex) {
                         error = new LoadException(ExceptionUtils.getFullStackTrace(ex),
-                            DbLoadDumper.dumpEventDatas(splitDatas));
+                                DbLoadDumper.dumpEventDatas(splitDatas));
                         exeResult = ExecuteResult.ERROR;
                     } catch (Throwable ex) {
                         error = new LoadException(ExceptionUtils.getFullStackTrace(ex),
-                            DbLoadDumper.dumpEventDatas(splitDatas));
+                                DbLoadDumper.dumpEventDatas(splitDatas));
                         exeResult = ExecuteResult.ERROR;
                     }
 
@@ -680,8 +717,8 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
                         if (retryCount >= retry) {
                             processFailedDatas(index);// 重试已结束，添加出错记录并退出
                             throw new LoadException(String.format("execute [%s] retry %s times failed",
-                                context.getIdentity().toString(),
-                                retryCount), error);
+                                    context.getIdentity().toString(),
+                                    retryCount), error);
                         } else {
                             try {
                                 int wait = retryCount * retryWait;
@@ -712,27 +749,9 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
 
         private void doPreparedStatement(PreparedStatement ps, DbDialect dbDialect, LobCreator lobCreator,
                                          EventData data) throws SQLException {
-            EventType type = data.getEventType();
-            // 注意insert/update语句对应的字段数序都是将主键排在后面
-            List<EventColumn> columns = new ArrayList<EventColumn>();
-            if (type.isInsert()) {
-                columns.addAll(data.getColumns()); // insert为所有字段
-                columns.addAll(data.getKeys());
-            } else if (type.isDelete()) {
-                columns.addAll(data.getKeys());
-            } else if (type.isUpdate()) {
-                boolean existOldKeys = !CollectionUtils.isEmpty(data.getOldKeys());
-                columns.addAll(data.getUpdatedColumns());// 只更新带有isUpdate=true的字段
-                if (existOldKeys && dbDialect.isDRDS()) {
-                    // DRDS需要区分主键是否有变更
-                    columns.addAll(data.getUpdatedKeys());
-                } else {
-                    columns.addAll(data.getKeys());
-                }
-                if (existOldKeys) {
-                    columns.addAll(data.getOldKeys());
-                }
-            }
+
+            List<EventColumn> columns = getEventColumns(dbDialect, data);
+
 
             // 获取一下当前字段名的数据是否必填
             Table table = dbDialect.findTable(data.getSchemaName(), data.getTableName());
@@ -816,6 +835,46 @@ public class DbLoadAction implements InitializingBean, DisposableBean {
                     throw ex;
                 }
             }
+        }
+
+        private List<EventColumn> getEventColumns(DbDialect dbDialect, EventData data) {
+            EventType type = data.getEventType();
+            // 注意insert/update语句对应的字段数序都是将主键排在后面
+            List<EventColumn> columns = new ArrayList<EventColumn>();
+            if (type.isInsert()) {
+                columns.addAll(data.getColumns()); // insert为所有字段
+                columns.addAll(data.getKeys());
+            } else if (type.isDelete()) {
+                columns.addAll(data.getKeys());
+            } else if (type.isUpdate()) {
+                boolean existOldKeys = !CollectionUtils.isEmpty(data.getOldKeys());
+                columns.addAll(data.getUpdatedColumns());// 只更新带有isUpdate=true的字段
+                if (existOldKeys && dbDialect.isDRDS()) {
+                    // DRDS需要区分主键是否有变更
+                    columns.addAll(data.getUpdatedKeys());
+                } else {
+                    columns.addAll(data.getKeys());
+                }
+                if (existOldKeys) {
+                    columns.addAll(data.getOldKeys());
+                }
+            }
+            return columns;
+        }
+
+        private String[] genSqls(DbDialect dbDialect,List<EventData> datas){
+            List<String> sqls = new ArrayList<String>();
+            for (EventData data : datas) {
+                List<EventColumn>  columns = getEventColumns(dbDialect,data);
+                StringBuilder sqlBuilder = new StringBuilder(data.getSql());
+                for (EventColumn column : columns) {
+                    int start = sqlBuilder.indexOf("?");
+                    int end = start +1;
+                    sqlBuilder.replace(start,end,"'"+column.getColumnValue()+"'");
+                }
+                sqls.add(sqlBuilder.toString());
+            }
+            return sqls.toArray(new String[0]);
         }
 
         private void processStat(EventData data, int affect, boolean batch) {

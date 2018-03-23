@@ -23,9 +23,73 @@ receiveBuffer
 
 - MemoryEventStoreWithBuffer.get
 
+# cpu 100%
+```
+"nioEventLoopGroup-2-3" #109 prio=10 os_prio=0 tid=0x00007fea843d0ee0 nid=0x209c runnable [0x00007feb5c15f000]
+   java.lang.Thread.State: RUNNABLE
+        at io.netty.util.internal.PlatformDependent0.copyMemory(PlatformDependent0.java:415)
+        at io.netty.util.internal.PlatformDependent.copyMemory(PlatformDependent.java:552)
+        at io.netty.buffer.UnsafeByteBufUtil.setBytes(UnsafeByteBufUtil.java:552)
+        at io.netty.buffer.PooledUnsafeDirectByteBuf.setBytes(PooledUnsafeDirectByteBuf.java:260)
+        at io.netty.buffer.AbstractByteBuf.discardReadBytes(AbstractByteBuf.java:210)
+        at com.alibaba.otter.canal.parse.driver.mysql.socket.SocketChannel.writeCache(SocketChannel.java:32)
+        - locked <0x00000000c0679028> (a java.lang.Object)
+        at com.alibaba.otter.canal.parse.driver.mysql.socket.SocketChannelPool$BusinessHandler.channelRead(SocketChannelPool.java:93)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:373)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:359)
+        at io.netty.channel.AbstractChannelHandlerContext.fireChannelRead(AbstractChannelHandlerContext.java:351)
+        at io.netty.channel.DefaultChannelPipeline$HeadContext.channelRead(DefaultChannelPipeline.java:1334)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:373)
+        at io.netty.channel.AbstractChannelHandlerContext.invokeChannelRead(AbstractChannelHandlerContext.java:359)
+        at io.netty.channel.DefaultChannelPipeline.fireChannelRead(DefaultChannelPipeline.java:926)
+        at io.netty.channel.nio.AbstractNioByteChannel$NioByteUnsafe.read(AbstractNioByteChannel.java:129)
+        at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:651)
+        at io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:574)
+        at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:488)
+        at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:450)
+        at io.netty.util.concurrent.SingleThreadEventExecutor$5.run(SingleThreadEventExecutor.java:873)
+        at io.netty.util.concurrent.DefaultThreadFactory$DefaultRunnableDecorator.run(DefaultThreadFactory.java:144)
+        at java.lang.Thread.run(Thread.java:748)
+
+```
+正常
+```
+"destination = aliyun , address = /10.65.215.12:3306 , EventParser" #680 daemon prio=5 os_prio=0 tid=0x00007f503c01f000 nid=0x2091 runnable [0x00007f51de3e2000]
+   java.lang.Thread.State: RUNNABLE
+        at sun.nio.ch.FileDispatcherImpl.read0(Native Method)
+        at sun.nio.ch.SocketDispatcher.read(SocketDispatcher.java:39)
+        at sun.nio.ch.IOUtil.readIntoNativeBuffer(IOUtil.java:223)
+        at sun.nio.ch.IOUtil.read(IOUtil.java:197)
+        at sun.nio.ch.SocketChannelImpl.read(SocketChannelImpl.java:380)
+        - locked <0x00000000c133f4b8> (a java.lang.Object)
+        at com.alibaba.otter.canal.parse.inbound.mysql.dbsync.DirectLogFetcher.fetch0(DirectLogFetcher.java:154)
+        at com.alibaba.otter.canal.parse.inbound.mysql.dbsync.DirectLogFetcher.fetch(DirectLogFetcher.java:78)
+        at com.alibaba.otter.canal.parse.inbound.mysql.MysqlConnection.dump(MysqlConnection.java:121)
+        at com.alibaba.otter.canal.parse.inbound.AbstractEventParser$3.run(AbstractEventParser.java:209)
+        at java.lang.Thread.run(Thread.java:748)
+
+```
+
 # 参数说明
 - 获取批次数据超时时间(毫秒)
-不设置超时时间,如果想按照消费批次大小来进行消费,需要设置canal的ITEMSIZE模式且超时时间设置为0
+如果想按照消费批次大小来进行消费,需要设置canal的ITEMSIZE模式且超时时间设置为0
+
+# 调优说明
+## canal
+   - 内存存储batch获取模式
+     使用ITEMSIZE，用个数进行限制不直接使用大小限制，因为大小不好控制
+   - 内存存储buffer记录数
+     这个要比消费批次大，否则不够一次读取的会影响效率，消费批次*10大概就可以了
+## Pipeline
+   - 并行度
+     无需调整，默认5就可以了，增大并行度只会增加内存并不会增加速度，因为并行度达到最大只会就会消费一个取一个跟当前有多少个并行无关
+   - 数据载入线程数
+     可以适当调大，差不多运行服务器cpu*2 可以最大限度的增加写入并行度
+   - 消费批次大小
+     可以适当调大，当缓冲区满了之后就会一下获取到最大数据了，再使用数据载入线程进行写入数据库
+   - 映射关系表
+     表的个数不要太多，太多可以把数据均分一下配置不同的pipeline
+   
 
 
 # 注意

@@ -16,18 +16,6 @@
 
 package com.alibaba.otter.node.common.statistics.impl;
 
-import java.util.List;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.InitializingBean;
-
 import com.alibaba.otter.node.common.communication.NodeCommmunicationClient;
 import com.alibaba.otter.node.common.statistics.StatisticsClientService;
 import com.alibaba.otter.shared.common.model.statistics.delay.DelayCount;
@@ -39,6 +27,20 @@ import com.alibaba.otter.shared.communication.model.statistics.DelayCountEvent;
 import com.alibaba.otter.shared.communication.model.statistics.DelayCountEvent.Action;
 import com.alibaba.otter.shared.communication.model.statistics.TableStatEvent;
 import com.alibaba.otter.shared.communication.model.statistics.ThroughputStatEvent;
+import com.google.common.base.Function;
+import com.google.common.collect.Lists;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.InitializingBean;
+
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * 统计信息的本地客户端服务
@@ -55,6 +57,7 @@ public class StatisticsClientServiceImpl implements StatisticsClientService, Ini
     private static ScheduledThreadPoolExecutor scheduler;
     private NodeCommmunicationClient           nodeCommmunicationClient;
 
+    private EventQueue eventQueue ;
     public void sendIncDelayCount(final DelayCount delayCount) {
         DelayCountEvent event = new DelayCountEvent();
         event.setCount(delayCount);
@@ -95,26 +98,11 @@ public class StatisticsClientServiceImpl implements StatisticsClientService, Ini
     }
 
     public void sendThroughputs(final List<ThroughputStat> stats) {
-        ThroughputStatEvent event = new ThroughputStatEvent();
-        event.setStats(stats);
-        nodeCommmunicationClient.callManager(event, new Callback<Object>() {
-
-            public void call(Object event) {
-                logger.info("sendThroughput successed for {}", stats);
-            }
-        });
-
+        eventQueue.pushThroughput(stats);
     }
 
     public void sendTableStats(final List<TableStat> stats) {
-        TableStatEvent event = new TableStatEvent();
-        event.setStats(stats);
-        nodeCommmunicationClient.callManager(event, new Callback<Object>() {
-
-            public void call(Object event) {
-                logger.info("sendTableStats successed for {}", stats);
-            }
-        });
+        eventQueue.pushTablestat(stats);
     }
 
     // ================= helper method ==============
@@ -127,6 +115,8 @@ public class StatisticsClientServiceImpl implements StatisticsClientService, Ini
                 doSendDelayCountEvent();
             }
         });
+        eventQueue = new EventQueue();
+        scheduler.scheduleAtFixedRate(eventQueue,60,60,TimeUnit.SECONDS);
     }
 
     private void doSendDelayCountEvent() {
@@ -151,4 +141,140 @@ public class StatisticsClientServiceImpl implements StatisticsClientService, Ini
         this.nodeCommmunicationClient = nodeCommmunicationClient;
     }
 
+    class EventQueue implements Runnable {
+        private final DateFormat MIN_FORMAT = new SimpleDateFormat("yyyyMMddHHmm");
+        private Object throughputLock = new Object(), tableLock = new Object();
+
+        private List<ThroughputStat> throughputStats = new ArrayList<ThroughputStat>();
+        private List<TableStat> tableStats = new ArrayList<TableStat>();
+
+        public void pushThroughput(List<ThroughputStat> stats) {
+            synchronized (throughputLock) {
+                throughputStats.addAll(stats);
+            }
+        }
+
+        public void pushTablestat(List<TableStat> stats) {
+            synchronized (tableLock) {
+                tableStats.addAll(stats);
+            }
+        }
+        //把列表按照一定的规则分组
+        private <E> Map<Object,List<E>> groupList(List<E> datas,Function<E,Object> keyFunction){
+            Map<Object,List<E>> map = new HashMap<Object, List<E>>();
+            for (E data : datas) {
+                Object key = keyFunction.apply(data);
+                List<E> list = map.get(key);
+                if(list == null){
+                    list = new ArrayList<E>();
+                    map.put(key,list);
+                }
+                list.add(data);
+            }
+            return map;
+        }
+        //把分组数据合并
+        private <E> List<E> mergeMap(Map<Object,List<E>> map,Function<List<E>,E> mergeFunction){
+            if(map == null || map.size() == 0){
+                return null;
+            }
+            List<E> list = new ArrayList<E>();
+            for (List<E> es : map.values()) {
+                list.add(mergeFunction.apply(es));
+            }
+            return list;
+        }
+        private void sendThroughputStats() {
+            List<ThroughputStat> thoughput = null;
+            synchronized (throughputLock) {
+                thoughput = throughputStats;
+                throughputStats = new ArrayList<ThroughputStat>();
+            }
+            Map<Object,List<ThroughputStat>> statGroup = groupList(thoughput, new Function<ThroughputStat, Object>() {
+                @Override
+                public String apply(ThroughputStat input) {
+                    //开始时间在同一分钟的算一组
+                    return new StringBuilder().append(input.getPipelineId()).append(input.getType().name()).append(MIN_FORMAT.format(input.getStartTime())).toString();
+                }
+            });
+            thoughput = mergeMap(statGroup, new Function<List<ThroughputStat>, ThroughputStat>() {
+                @Override
+                public ThroughputStat apply(List<ThroughputStat> input) {
+                    ThroughputStat stat = input.get(0);
+                    for (int i=1;i<input.size();i++){
+                        stat.setNumber(input.get(i).getNumber()+stat.getNumber());
+                        stat.setSize(input.get(i).getSize()+stat.getSize());
+                    }
+                    return stat;
+                }
+            });
+            if(thoughput == null || thoughput.size() == 0){
+                return;
+            }
+            ThroughputStatEvent event = new ThroughputStatEvent();
+            event.setStats(thoughput);
+            logger.debug("send throughput stats {}", Lists.transform(thoughput, new Function<ThroughputStat, Object>() {
+                @Override
+                public Object apply(ThroughputStat input) {
+                    return MIN_FORMAT.format(input.getStartTime())+"-"+MIN_FORMAT.format(input.getEndTime()) +":"+ input.getNumber();
+                }
+            }));
+            final long start = System.currentTimeMillis();
+            nodeCommmunicationClient.callManager(event, new Callback<Object>() {
+                public void call(Object event) {
+                    logger.warn("send throughput stats took {} ms,result is {}", System.currentTimeMillis() - start,event);
+                }
+            });
+        }
+        private void sendTableStats() {
+            List<TableStat> table = null;
+            synchronized (tableLock){
+                table = tableStats;
+                tableStats = new ArrayList<TableStat>();
+            }
+            Map<Object,List<TableStat>> map = groupList(table, new Function<TableStat, Object>() {
+                @Override
+                public Object apply(TableStat input) {
+                    return new StringBuilder().append(input.getPipelineId()).append(input.getDataMediaPairId()).toString();
+                }
+            });
+            table = mergeMap(map, new Function<List<TableStat>, TableStat>() {
+                @Override
+                public TableStat apply(List<TableStat> input) {
+                    TableStat stat = input.get(0),next = null;
+                    for (int i = 1;i<input.size();i++){
+                        next = input.get(i);
+                        stat.setInsertCount(stat.getInsertCount() + next.getInsertCount());
+                        stat.setUpdateCount(stat.getUpdateCount() + next.getUpdateCount());
+                        stat.setDeleteCount(stat.getDeleteCount() + next.getDeleteCount());
+                        stat.setFileCount(stat.getFileCount() + next.getFileCount());
+                        stat.setFileSize(next.getFileSize());
+                    }
+                    return stat;
+                }
+            });
+            if(table == null || table.size() == 0){
+                return;
+            }
+            TableStatEvent event = new TableStatEvent();
+            event.setStats(table);
+            logger.debug("===== send {} table stats ,{}",table.size(),table);
+            final long start = System.currentTimeMillis();
+            nodeCommmunicationClient.callManager(event, new Callback<Object>() {
+                public void call(Object event) {
+                    logger.info("send table stats took {}ms,result is {}", System.currentTimeMillis() - start,event);
+                }
+            });
+        }
+
+        @Override
+        public void run() {
+            try {
+                sendThroughputStats();
+                sendTableStats();
+            }catch (Exception e){
+                logger.error("xxxxxxxxxx send stats error",e);
+            }
+        }
+    }
 }

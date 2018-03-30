@@ -5,6 +5,7 @@
 var fs = require("fs");
 var DATA = fs.readFileSync('tables') + '';
 var LINES = DATA.split('\r\n');
+var SPLIT_SCHEMA_TABLE = ".";
 var SQL = [];
 //从数据库读取到的数据源配置文件
 var SOURCE = {
@@ -16,12 +17,12 @@ var SOURCE = {
         "encode": "UTF8",
         "gmtCreate": new Date().getTime(),
         "gmtModified": new Date().getTime(),
-        "id": 3,
-        "name": "aliyu",
-        "password": "!QAZ2wsx",
+        "id": 1,
+        "name": "Source",
+        "password": "wch123",
         "type": "MYSQL",
-        "url": "jdbc:mysql://rm-uf6431hzfw3r8ryb6go.mysql.rds.aliyuncs.com:3306",
-        "username": "vfinance_yace"
+        "url": "jdbc:mysql://10.65.215.12:3306",
+        "username": "root"
     }
 }, TARGET = {
     "mode": "SINGLE",
@@ -47,11 +48,11 @@ function genDataMediaSql() {
     SQL = [];
     LINES.forEach(function (line) {
         line = line.trim();
-        let cols = line.split("\t");
+        let cols = line.split(SPLIT_SCHEMA_TABLE);
         if (!cols || cols.length < 2) {
             return;
         }
-        var schema = cols[0] + '2', table = cols[1];
+        var schema = cols[0], table = cols[1];
         SOURCE.name = table;
         SOURCE.namespace = schema;
         TARGET.name = table;
@@ -69,10 +70,10 @@ function genTableSqlWithSource(source) {
 }
 //生成配对配置，与生成配置表的配置配合使用，记得修改start及count值
 function genPairSql() {
-    var pipeline = 4;
+    var pipeline = 1;
     SQL = [];
     //SELECT AUTO_INCREMENT FROM information_schema.`TABLES` WHERE TABLE_SCHEMA='otter' AND TABLE_NAME='data_media';
-    var start = 5, count = LINES.length; //配置表的源id
+    var start = 1, count = LINES.length; //配置表的源id
     for (var i = 0; i < count; i++) {
         var sql = [
             'INSERT INTO `DATA_MEDIA_PAIR` (`PULLWEIGHT`, `PUSHWEIGHT`, `SOURCE_DATA_MEDIA_ID`, `TARGET_DATA_MEDIA_ID`, `PIPELINE_ID`, `COLUMN_PAIR_MODE`, `GMT_CREATE`, `GMT_MODIFIED`) values(NULL',
@@ -82,7 +83,7 @@ function genPairSql() {
         ];
         SQL.push(sql.join(','))
     }
-    SQL.push("UPDATE DATA_MEDIA_PAIR SET resolver = (SELECT t.data FROM data_bak t WHERE t.name = 'resolver-null'),FILTER = (SELECT t.data FROM data_bak t WHERE t.name = 'filter-del');");
+    //SQL.push("UPDATE DATA_MEDIA_PAIR SET resolver = (SELECT t.data FROM data_bak t WHERE t.name = 'resolver-null'),FILTER = (SELECT t.data FROM data_bak t WHERE t.name = 'filter-del');");
     saveSql('pair.sql');
 }
 /**
@@ -92,7 +93,7 @@ function truncateTable() {
     SQL = [];
     LINES.forEach(line => {
         line = line.trim();
-        let cols = line.split("\t");
+        let cols = line.split(SPLIT_SCHEMA_TABLE);
         if (!cols || cols.length < 2) {
             return;
         }
